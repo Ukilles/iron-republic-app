@@ -63,9 +63,16 @@ const emptyExpense = {
 };
 
 const emptyQuote = {
+  pickupAddress: '',
+  dropoffAddress: '',
   miles: '',
-  offeredRate: '',
+  weight: '',
+  freightType: 'Standard',
+  urgency: 'Standard',
   estimatedExpenses: '',
+  tolls: '',
+  minimumCharge: 75,
+  baseRatePerMile: 2.25,
 };
 
 const tabs = ['Dashboard', 'Leads', 'Loads', 'Finance', 'Documents', 'Quote Tool'];
@@ -344,15 +351,54 @@ export default function App() {
 
   const quoteStats = useMemo(() => {
     const miles = toNumber(quoteForm.miles);
-    const offeredRate = toNumber(quoteForm.offeredRate);
     const estimatedExpenses = toNumber(quoteForm.estimatedExpenses);
-    const rpm = miles > 0 ? offeredRate / miles : 0;
-    const estProfit = offeredRate - estimatedExpenses;
+    const tolls = toNumber(quoteForm.tolls);
+    const minimumCharge = toNumber(quoteForm.minimumCharge) || 75;
+    const baseRatePerMile = toNumber(quoteForm.baseRatePerMile) || 2.25;
+    const weight = toNumber(quoteForm.weight);
+
+    let urgencyMultiplier = 1;
+    if (quoteForm.urgency === 'Urgent') urgencyMultiplier = 1.2;
+    if (quoteForm.urgency === 'After Hours') urgencyMultiplier = 1.3;
+
+    let freightMultiplier = 1;
+    if (quoteForm.freightType === 'Fragile') freightMultiplier = 1.1;
+    if (quoteForm.freightType === 'Pallet') freightMultiplier = 1.08;
+
+    let weightFee = 0;
+    if (weight > 1500) weightFee = 35;
+    if (weight > 3000) weightFee = 75;
+
+    const mileageQuote = miles * baseRatePerMile;
+    const baseQuote = Math.max(minimumCharge, mileageQuote);
+    const suggestedQuote = (baseQuote * urgencyMultiplier * freightMultiplier) + weightFee + tolls;
+    const rpm = miles > 0 ? suggestedQuote / miles : 0;
+    const estProfit = suggestedQuote - estimatedExpenses - tolls;
+    const taxRate = toNumber(state.settings.defaultTaxRate) / 100;
+    const taxSetAside = Math.max(estProfit, 0) * taxRate;
+    const takeHome = Math.max(estProfit, 0) - taxSetAside;
+
     let decision = 'PASS';
     if (rpm >= 2 && estProfit > 0) decision = 'TAKE';
     if (rpm >= 2.5 && estProfit > 150) decision = 'STRONG TAKE';
-    return { miles, offeredRate, estimatedExpenses, rpm, estProfit, decision };
-  }, [quoteForm]);
+
+    return {
+      miles,
+      estimatedExpenses,
+      tolls,
+      minimumCharge,
+      baseRatePerMile,
+      suggestedQuote,
+      rpm,
+      estProfit,
+      taxSetAside,
+      takeHome,
+      decision,
+      urgencyMultiplier,
+      freightMultiplier,
+      weightFee,
+    };
+  }, [quoteForm, state.settings.defaultTaxRate]);
 
   return (
     <div className="app-shell">
@@ -678,18 +724,49 @@ export default function App() {
 
       {tab === 'Quote Tool' && (
         <div className="grid two-col">
-          <Card title="Quick Quote Calculator">
+          <Card title="Customer Quote Generator" right={<span className="muted">Starter defaults loaded</span>}>
             <div className="form-grid">
-              <Field label="Miles"><input type="number" value={quoteForm.miles} onChange={(e) => setQuoteForm({ ...quoteForm, miles: e.target.value })} /></Field>
-              <Field label="Offered Rate"><input type="number" value={quoteForm.offeredRate} onChange={(e) => setQuoteForm({ ...quoteForm, offeredRate: e.target.value })} /></Field>
+              <Field label="Pickup Address"><input value={quoteForm.pickupAddress} onChange={(e) => setQuoteForm({ ...quoteForm, pickupAddress: e.target.value })} /></Field>
+              <Field label="Dropoff Address"><input value={quoteForm.dropoffAddress} onChange={(e) => setQuoteForm({ ...quoteForm, dropoffAddress: e.target.value })} /></Field>
+              <Field label="Manual Miles"><input type="number" value={quoteForm.miles} onChange={(e) => setQuoteForm({ ...quoteForm, miles: e.target.value })} /></Field>
+              <Field label="Weight (lbs)"><input type="number" value={quoteForm.weight} onChange={(e) => setQuoteForm({ ...quoteForm, weight: e.target.value })} /></Field>
+              <Field label="Freight Type">
+                <select value={quoteForm.freightType} onChange={(e) => setQuoteForm({ ...quoteForm, freightType: e.target.value })}>
+                  <option>Standard</option>
+                  <option>Pallet</option>
+                  <option>Fragile</option>
+                </select>
+              </Field>
+              <Field label="Urgency">
+                <select value={quoteForm.urgency} onChange={(e) => setQuoteForm({ ...quoteForm, urgency: e.target.value })}>
+                  <option>Standard</option>
+                  <option>Urgent</option>
+                  <option>After Hours</option>
+                </select>
+              </Field>
               <Field label="Estimated Expenses"><input type="number" value={quoteForm.estimatedExpenses} onChange={(e) => setQuoteForm({ ...quoteForm, estimatedExpenses: e.target.value })} /></Field>
+              <Field label="Tolls"><input type="number" value={quoteForm.tolls} onChange={(e) => setQuoteForm({ ...quoteForm, tolls: e.target.value })} /></Field>
+              <Field label="Minimum Charge"><input type="number" value={quoteForm.minimumCharge} onChange={(e) => setQuoteForm({ ...quoteForm, minimumCharge: e.target.value })} /></Field>
+              <Field label="Base Rate Per Mile"><input type="number" step="0.01" value={quoteForm.baseRatePerMile} onChange={(e) => setQuoteForm({ ...quoteForm, baseRatePerMile: e.target.value })} /></Field>
+            </div>
+            <div className="action-row">
+              <button className="secondary-btn" onClick={() => setQuoteForm(emptyQuote)}>Reset Quote Tool</button>
             </div>
           </Card>
           <Card title="Decision Snapshot">
             <div className="summary-strip vertical">
-              <SummaryChip label="Rate Per Mile" value={`$${quoteStats.rpm.toFixed(2)}`} />
+              <SummaryChip label="Suggested Customer Quote" value={currency(quoteStats.suggestedQuote)} strong />
+              <SummaryChip label="Rate Per Mile Used" value={`$${quoteStats.rpm.toFixed(2)}`} />
               <SummaryChip label="Estimated Profit" value={currency(quoteStats.estProfit)} />
+              <SummaryChip label="Tax Set Aside" value={currency(quoteStats.taxSetAside)} />
+              <SummaryChip label="Take Home" value={currency(quoteStats.takeHome)} />
               <SummaryChip label="Decision" value={quoteStats.decision} strong={quoteStats.decision !== 'PASS'} />
+            </div>
+            <div className="list-stack top-gap">
+              <div className="list-item compact"><div><strong>Pickup</strong><p>{quoteForm.pickupAddress || 'Not entered yet'}</p></div></div>
+              <div className="list-item compact"><div><strong>Dropoff</strong><p>{quoteForm.dropoffAddress || 'Not entered yet'}</p></div></div>
+              <div className="list-item compact"><div><strong>Pricing Rules</strong><p>Min {currency(quoteStats.minimumCharge)} • Base ${quoteStats.baseRatePerMile.toFixed(2)}/mile</p></div></div>
+              <div className="list-item compact"><div><strong>Add-ons</strong><p>Urgency x{quoteStats.urgencyMultiplier.toFixed(2)} • Freight x{quoteStats.freightMultiplier.toFixed(2)} • Weight fee {currency(quoteStats.weightFee)}</p></div></div>
             </div>
           </Card>
         </div>
