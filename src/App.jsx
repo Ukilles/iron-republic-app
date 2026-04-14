@@ -1,498 +1,725 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import Tesseract from 'tesseract.js';
 
-const storageKeys = {
-  outreachEntries: 'irl_outreach_entries',
-  invoiceEntries: 'irl_invoice_entries',
-  rateConEntries: 'irl_ratecon_entries',
-  expenseEntries: 'irl_expense_entries',
-  loadEntries: 'irl_load_entries',
+const STORAGE_KEY = 'irl-upgraded-app-v1';
+
+const defaultState = {
+  leads: [],
+  loads: [],
+  expenses: [],
+  invoices: [],
+  docs: [],
+  settings: {
+    repName: '',
+    defaultTaxRate: 25,
+  },
 };
 
-const initialOutreach = {
-  date: '',
-  week: '',
-  rep: '',
+const emptyLead = {
+  id: '',
+  date: today(),
   companyName: '',
-  phone: '',
-  contactName: '',
-  location: '',
-  businessType: '',
-  contactMethod: '',
-  interestLevel: '',
-  servicesNeeded: '',
-  followUpDate: '',
-  notes: '',
-};
-
-const initialInvoice = {
-  invoiceNumber: '',
-  date: '',
-  dueDate: '',
-  billToCompany: '',
-  billToContact: '',
-  billToPhone: '',
-  billToEmail: '',
-  pickup: '',
-  delivery: '',
-  freight: '',
-  weight: '',
-  rate: '',
-  amount: '',
-  terms: 'NET 15',
-  paymentMethods: '',
-};
-
-const initialRateCon = {
-  company: '',
   contactName: '',
   phone: '',
   email: '',
-  pickupLocation: '',
-  pickupDateTime: '',
-  deliveryLocation: '',
-  deliveryDateTime: '',
-  freight: '',
-  weight: '',
-  pieces: '',
-  agreedRate: '',
-  paymentTerms: '',
-  specialInstructions: '',
-};
-
-const initialExpense = {
-  date: '',
-  category: '',
-  description: '',
-  amount: '',
-  paymentMethod: '',
+  website: '',
+  address: '',
+  businessType: '',
+  contactMethod: 'Walk-in',
+  interestLevel: 'Warm',
+  status: 'New',
+  servicesNeeded: '',
+  followUpDate: '',
   notes: '',
+  rawScanText: '',
+  attachmentName: '',
+  attachmentDataUrl: '',
 };
 
-const initialLoad = {
-  loadId: '',
-  date: '',
+const emptyLoad = {
+  id: '',
+  date: today(),
+  customer: '',
   pickup: '',
   delivery: '',
   miles: '',
   rate: '',
   expenses: '',
-  paid: '',
+  taxRate: 25,
+  paidStatus: 'Unpaid',
+  notes: '',
+  attachmentName: '',
+  attachmentDataUrl: '',
 };
 
-function loadSaved(key, fallback) {
+const emptyExpense = {
+  id: '',
+  date: today(),
+  category: 'Fuel',
+  description: '',
+  amount: '',
+  paymentMethod: 'Card',
+  notes: '',
+};
+
+const emptyQuote = {
+  miles: '',
+  offeredRate: '',
+  estimatedExpenses: '',
+};
+
+const tabs = ['Dashboard', 'Leads', 'Loads', 'Finance', 'Documents', 'Quote Tool'];
+const leadStatuses = ['New', 'Contacted', 'Waiting', 'Quoted', 'Won', 'Lost'];
+const interestLevels = ['Hot', 'Warm', 'Cold'];
+const businessTypes = ['Warehouse', 'Machine Shop', 'Construction', 'Office', 'Retail', 'Other'];
+const paidStatuses = ['Unpaid', 'Partially Paid', 'Paid'];
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function makeId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function loadState() {
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaultState;
+    return { ...defaultState, ...JSON.parse(raw) };
   } catch {
-    return fallback;
+    return defaultState;
   }
 }
 
-function saveData(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+function saveState(state) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
-function Field({ label, value, onChange, type = 'text', placeholder = '' }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      <input type={type} value={value} onChange={onChange} placeholder={placeholder} />
-    </label>
-  );
+function currency(value) {
+  const num = Number(value || 0);
+  return num.toLocaleString(undefined, { style: 'currency', currency: 'USD' });
 }
 
-function TextField({ label, value, onChange, placeholder = '' }) {
-  return (
-    <label className="field">
-      <span>{label}</span>
-      <textarea value={value} onChange={onChange} placeholder={placeholder} rows="4" />
-    </label>
-  );
+function toNumber(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : 0;
 }
 
-function EntryCard({ title, lines, rightText }) {
+function interestClass(level) {
+  if (level === 'Hot') return 'pill hot';
+  if (level === 'Warm') return 'pill warm';
+  return 'pill cold';
+}
+
+function statusClass(status) {
+  return `status status-${status.toLowerCase().replace(/\s+/g, '-')}`;
+}
+
+function Card({ title, right, children }) {
   return (
-    <div className="entry-card">
-      <div>
-        <div className="entry-title">{title}</div>
-        {lines.map((line, index) => (
-          <div key={index} className="entry-line">{line}</div>
-        ))}
+    <section className="card">
+      <div className="card-head">
+        <h2>{title}</h2>
+        {right ? <div>{right}</div> : null}
       </div>
-      {rightText ? <div className="entry-right">{rightText}</div> : null}
+      {children}
+    </section>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label className="field">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function parseBusinessCard(text) {
+  const clean = text.replace(/\r/g, '');
+  const lines = clean
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const email = clean.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
+  const phone =
+    clean.match(/(?:\+?1[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?)\d{3}[-.\s]?\d{4}/)?.[0] || '';
+  const website =
+    clean.match(/(?:https?:\/\/)?(?:www\.)?[A-Z0-9.-]+\.[A-Z]{2,}(?:\/\S*)?/i)?.[0] || '';
+
+  let companyName = '';
+  let contactName = '';
+  const addressLine = lines.find((line) => /\d+/.test(line) && /(st|street|rd|road|ave|avenue|blvd|drive|dr|lane|ln|way|tx|suite|ste)/i.test(line)) || '';
+
+  const nameCandidates = lines.filter(
+    (line) =>
+      !line.includes('@') &&
+      !/\d{3}/.test(line) &&
+      !/(www\.|http|street|road|ave|blvd|suite|ste|tx)/i.test(line) &&
+      /^[A-Za-z .,&'-]+$/.test(line)
+  );
+
+  if (nameCandidates.length > 0) {
+    contactName = nameCandidates[0] || '';
+    companyName = nameCandidates[1] || nameCandidates[0] || '';
+  }
+
+  if (nameCandidates.length > 1 && /llc|inc|logistics|transport|services|company|co\.?/i.test(nameCandidates[0])) {
+    companyName = nameCandidates[0];
+    contactName = nameCandidates[1] || '';
+  }
+
+  if (!companyName) {
+    companyName = lines.find((line) => /llc|inc|logistics|transport|services|company|co\.?/i.test(line)) || lines[0] || '';
+  }
+
+  if (!contactName) {
+    contactName = lines.find((line) => /^[A-Z][a-z]+\s+[A-Z][a-z]+/.test(line)) || '';
+  }
+
+  return {
+    companyName,
+    contactName,
+    phone,
+    email,
+    website,
+    address: addressLine,
+    rawScanText: clean,
+  };
+}
+
+export default function App() {
+  const [state, setState] = useState(loadState);
+  const [tab, setTab] = useState('Dashboard');
+  const [leadForm, setLeadForm] = useState({ ...emptyLead, taxRate: state.settings.defaultTaxRate });
+  const [loadForm, setLoadForm] = useState({ ...emptyLoad, taxRate: state.settings.defaultTaxRate });
+  const [expenseForm, setExpenseForm] = useState(emptyExpense);
+  const [quoteForm, setQuoteForm] = useState(emptyQuote);
+  const [leadSearch, setLeadSearch] = useState('');
+  const [leadFilterStatus, setLeadFilterStatus] = useState('All');
+  const [leadFilterInterest, setLeadFilterInterest] = useState('All');
+  const [loadFilterPaid, setLoadFilterPaid] = useState('All');
+  const [ocrBusy, setOcrBusy] = useState(false);
+  const [ocrProgress, setOcrProgress] = useState('');
+
+  useEffect(() => {
+    saveState(state);
+  }, [state]);
+
+  const dashboard = useMemo(() => {
+    const hotLeads = state.leads.filter((lead) => lead.interestLevel === 'Hot').length;
+    const dueToday = state.leads.filter((lead) => lead.followUpDate && lead.followUpDate <= today() && !['Won', 'Lost'].includes(lead.status)).length;
+    const unpaidLoads = state.loads.filter((load) => load.paidStatus !== 'Paid').length;
+    const totalRevenue = state.loads.reduce((sum, load) => sum + toNumber(load.rate), 0);
+    const totalExpenses = state.loads.reduce((sum, load) => sum + toNumber(load.expenses), 0) + state.expenses.reduce((sum, e) => sum + toNumber(e.amount), 0);
+    const totalProfit = state.loads.reduce((sum, load) => sum + calcLoad(load).profit, 0);
+    const totalTax = state.loads.reduce((sum, load) => sum + calcLoad(load).taxSetAside, 0);
+    return { hotLeads, dueToday, unpaidLoads, totalRevenue, totalExpenses, totalProfit, totalTax };
+  }, [state]);
+
+  const leadDuplicates = useMemo(() => {
+    const map = new Map();
+    state.leads.forEach((lead) => {
+      const key = `${lead.companyName.toLowerCase()}|${lead.phone}`;
+      map.set(key, (map.get(key) || 0) + 1);
+    });
+    return map;
+  }, [state.leads]);
+
+  const filteredLeads = useMemo(() => {
+    return state.leads.filter((lead) => {
+      const matchesSearch = !leadSearch || [lead.companyName, lead.contactName, lead.phone, lead.email, lead.address].join(' ').toLowerCase().includes(leadSearch.toLowerCase());
+      const matchesStatus = leadFilterStatus === 'All' || lead.status === leadFilterStatus;
+      const matchesInterest = leadFilterInterest === 'All' || lead.interestLevel === leadFilterInterest;
+      return matchesSearch && matchesStatus && matchesInterest;
+    });
+  }, [state.leads, leadSearch, leadFilterStatus, leadFilterInterest]);
+
+  const filteredLoads = useMemo(() => {
+    return state.loads.filter((load) => loadFilterPaid === 'All' || load.paidStatus === loadFilterPaid);
+  }, [state.loads, loadFilterPaid]);
+
+  async function handleLeadAttachment(file) {
+    if (!file) return;
+    const dataUrl = await readFileAsDataUrl(file);
+    setLeadForm((prev) => ({ ...prev, attachmentName: file.name, attachmentDataUrl: dataUrl }));
+  }
+
+  async function handleLoadAttachment(file) {
+    if (!file) return;
+    const dataUrl = await readFileAsDataUrl(file);
+    setLoadForm((prev) => ({ ...prev, attachmentName: file.name, attachmentDataUrl: dataUrl }));
+  }
+
+  async function scanBusinessCard(file) {
+    if (!file) return;
+    await handleLeadAttachment(file);
+    setOcrBusy(true);
+    setOcrProgress('Reading card...');
+    try {
+      const { data } = await Tesseract.recognize(file, 'eng', {
+        logger: (m) => {
+          if (m.status) setOcrProgress(`${m.status}${m.progress ? ` ${Math.round(m.progress * 100)}%` : ''}`);
+        },
+      });
+      const parsed = parseBusinessCard(data.text || '');
+      setLeadForm((prev) => ({
+        ...prev,
+        ...parsed,
+        date: prev.date || today(),
+      }));
+      setOcrProgress('Scan complete. Review the fields before saving.');
+    } catch (error) {
+      setOcrProgress('Scan failed. Try a clearer photo with better lighting.');
+    } finally {
+      setOcrBusy(false);
+    }
+  }
+
+  function saveLead() {
+    const duplicateKey = `${leadForm.companyName.toLowerCase()}|${leadForm.phone}`;
+    const isDuplicate = leadDuplicates.get(duplicateKey) > 0;
+    const lead = { ...leadForm, id: makeId('lead') };
+    setState((prev) => ({
+      ...prev,
+      leads: [lead, ...prev.leads],
+      docs: lead.attachmentDataUrl
+        ? [{ id: makeId('doc'), kind: 'Lead Attachment', name: lead.attachmentName || 'Lead image', date: lead.date, relatedTo: lead.companyName, dataUrl: lead.attachmentDataUrl }, ...prev.docs]
+        : prev.docs,
+    }));
+    setLeadForm(emptyLead);
+    setOcrProgress(isDuplicate ? 'Saved, but this looks like a duplicate lead.' : 'Lead saved.');
+  }
+
+  function saveLoad() {
+    const load = { ...loadForm, id: makeId('load') };
+    setState((prev) => ({
+      ...prev,
+      loads: [load, ...prev.loads],
+      docs: load.attachmentDataUrl
+        ? [{ id: makeId('doc'), kind: 'Load Attachment', name: load.attachmentName || 'Load image', date: load.date, relatedTo: load.customer || load.id, dataUrl: load.attachmentDataUrl }, ...prev.docs]
+        : prev.docs,
+    }));
+    setLoadForm({ ...emptyLoad, taxRate: prevTaxRate(state) });
+  }
+
+  function prevTaxRate(currentState) {
+    return currentState.settings.defaultTaxRate || 25;
+  }
+
+  function saveExpense() {
+    const expense = { ...expenseForm, id: makeId('expense') };
+    setState((prev) => ({ ...prev, expenses: [expense, ...prev.expenses] }));
+    setExpenseForm(emptyExpense);
+  }
+
+  function updateLead(id, patch) {
+    setState((prev) => ({
+      ...prev,
+      leads: prev.leads.map((lead) => (lead.id === id ? { ...lead, ...patch } : lead)),
+    }));
+  }
+
+  function calcLoad(load) {
+    const rate = toNumber(load.rate);
+    const expenses = toNumber(load.expenses);
+    const profit = Math.max(rate - expenses, 0);
+    const taxRate = toNumber(load.taxRate) / 100;
+    const taxSetAside = profit * taxRate;
+    const takeHome = profit - taxSetAside;
+    return { rate, expenses, profit, taxRate, taxSetAside, takeHome };
+  }
+
+  const quoteStats = useMemo(() => {
+    const miles = toNumber(quoteForm.miles);
+    const offeredRate = toNumber(quoteForm.offeredRate);
+    const estimatedExpenses = toNumber(quoteForm.estimatedExpenses);
+    const rpm = miles > 0 ? offeredRate / miles : 0;
+    const estProfit = offeredRate - estimatedExpenses;
+    let decision = 'PASS';
+    if (rpm >= 2 && estProfit > 0) decision = 'TAKE';
+    if (rpm >= 2.5 && estProfit > 150) decision = 'STRONG TAKE';
+    return { miles, offeredRate, estimatedExpenses, rpm, estProfit, decision };
+  }, [quoteForm]);
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div>
+          <h1>Iron Republic Logistics</h1>
+          <p>Lead tracking, loads, taxes, follow-ups, scanner, and paperwork in one field system.</p>
+        </div>
+        <div className="settings-box">
+          <Field label="Default Tax %">
+            <input
+              type="number"
+              value={state.settings.defaultTaxRate}
+              onChange={(e) =>
+                setState((prev) => ({
+                  ...prev,
+                  settings: { ...prev.settings, defaultTaxRate: Number(e.target.value || 25) },
+                }))
+              }
+            />
+          </Field>
+        </div>
+      </header>
+
+      <nav className="tabbar">
+        {tabs.map((name) => (
+          <button key={name} className={tab === name ? 'tab active' : 'tab'} onClick={() => setTab(name)}>
+            {name}
+          </button>
+        ))}
+      </nav>
+
+      {tab === 'Dashboard' && (
+        <div className="grid two-col">
+          <div className="stats-grid">
+            <Stat title="Total Leads" value={state.leads.length} />
+            <Stat title="Hot Leads" value={dashboard.hotLeads} />
+            <Stat title="Follow-Ups Due" value={dashboard.dueToday} alert={dashboard.dueToday > 0} />
+            <Stat title="Unpaid Loads" value={dashboard.unpaidLoads} alert={dashboard.unpaidLoads > 0} />
+            <Stat title="Total Profit" value={currency(dashboard.totalProfit)} />
+            <Stat title="Taxes to Set Aside" value={currency(dashboard.totalTax)} />
+          </div>
+          <Card title="Follow-Ups Due Today">
+            <div className="list-stack">
+              {state.leads.filter((lead) => lead.followUpDate && lead.followUpDate <= today() && !['Won', 'Lost'].includes(lead.status)).length === 0 ? (
+                <Empty text="No follow-ups due right now." />
+              ) : (
+                state.leads
+                  .filter((lead) => lead.followUpDate && lead.followUpDate <= today() && !['Won', 'Lost'].includes(lead.status))
+                  .map((lead) => (
+                    <div key={lead.id} className="list-item">
+                      <div>
+                        <strong>{lead.companyName || 'Unnamed lead'}</strong>
+                        <p>{lead.contactName} • {lead.phone}</p>
+                        <p>{lead.followUpDate}</p>
+                      </div>
+                      <div className="stack-right">
+                        <span className={interestClass(lead.interestLevel)}>{lead.interestLevel}</span>
+                        <button className="small-btn" onClick={() => updateLead(lead.id, { status: 'Contacted', followUpDate: '' })}>Mark contacted</button>
+                      </div>
+                    </div>
+                  ))
+              )}
+            </div>
+          </Card>
+          <Card title="Recent Leads">
+            <div className="list-stack">
+              {state.leads.slice(0, 5).map((lead) => (
+                <div key={lead.id} className="list-item compact">
+                  <div>
+                    <strong>{lead.companyName}</strong>
+                    <p>{lead.contactName} • {lead.phone}</p>
+                  </div>
+                  <div className="stack-right">
+                    <span className={statusClass(lead.status)}>{lead.status}</span>
+                    <span className={interestClass(lead.interestLevel)}>{lead.interestLevel}</span>
+                  </div>
+                </div>
+              ))}
+              {state.leads.length === 0 && <Empty text="No leads yet." />}
+            </div>
+          </Card>
+          <Card title="Recent Loads">
+            <div className="list-stack">
+              {state.loads.slice(0, 5).map((load) => {
+                const c = calcLoad(load);
+                return (
+                  <div key={load.id} className="list-item compact">
+                    <div>
+                      <strong>{load.customer || 'Unnamed customer'}</strong>
+                      <p>{load.pickup} → {load.delivery}</p>
+                    </div>
+                    <div className="stack-right align-right">
+                      <strong>{currency(c.profit)}</strong>
+                      <span className={statusClass(load.paidStatus)}>{load.paidStatus}</span>
+                    </div>
+                  </div>
+                );
+              })}
+              {state.loads.length === 0 && <Empty text="No loads logged yet." />}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === 'Leads' && (
+        <div className="grid two-col">
+          <Card title="Lead Capture" right={ocrBusy ? <span className="muted">{ocrProgress}</span> : <span className="muted">Scan → review → save</span>}>
+            <div className="form-grid">
+              <Field label="Scan Business Card">
+                <input type="file" accept="image/*" capture="environment" onChange={(e) => scanBusinessCard(e.target.files?.[0])} />
+              </Field>
+              <Field label="Attach Image">
+                <input type="file" accept="image/*,.pdf" onChange={(e) => handleLeadAttachment(e.target.files?.[0])} />
+              </Field>
+              <Field label="Date"><input type="date" value={leadForm.date} onChange={(e) => setLeadForm({ ...leadForm, date: e.target.value })} /></Field>
+              <Field label="Business Type">
+                <select value={leadForm.businessType} onChange={(e) => setLeadForm({ ...leadForm, businessType: e.target.value })}>
+                  <option value="">Select</option>
+                  {businessTypes.map((type) => <option key={type}>{type}</option>)}
+                </select>
+              </Field>
+              <Field label="Company Name"><input value={leadForm.companyName} onChange={(e) => setLeadForm({ ...leadForm, companyName: e.target.value })} /></Field>
+              <Field label="Contact Name"><input value={leadForm.contactName} onChange={(e) => setLeadForm({ ...leadForm, contactName: e.target.value })} /></Field>
+              <Field label="Phone"><input value={leadForm.phone} onChange={(e) => setLeadForm({ ...leadForm, phone: e.target.value })} /></Field>
+              <Field label="Email"><input value={leadForm.email} onChange={(e) => setLeadForm({ ...leadForm, email: e.target.value })} /></Field>
+              <Field label="Website"><input value={leadForm.website} onChange={(e) => setLeadForm({ ...leadForm, website: e.target.value })} /></Field>
+              <Field label="Address"><input value={leadForm.address} onChange={(e) => setLeadForm({ ...leadForm, address: e.target.value })} /></Field>
+              <Field label="Contact Method">
+                <select value={leadForm.contactMethod} onChange={(e) => setLeadForm({ ...leadForm, contactMethod: e.target.value })}>
+                  <option>Walk-in</option>
+                  <option>Cold Call</option>
+                  <option>Referral</option>
+                  <option>Repeat Visit</option>
+                </select>
+              </Field>
+              <Field label="Follow-Up Date"><input type="date" value={leadForm.followUpDate} onChange={(e) => setLeadForm({ ...leadForm, followUpDate: e.target.value })} /></Field>
+            </div>
+
+            <div className="segmented-row">
+              <span className="seg-label">Interest</span>
+              {interestLevels.map((level) => (
+                <button key={level} className={leadForm.interestLevel === level ? `${interestClass(level)} active-btn` : interestClass(level)} onClick={() => setLeadForm({ ...leadForm, interestLevel: level })}>
+                  {level}
+                </button>
+              ))}
+            </div>
+            <div className="segmented-row">
+              <span className="seg-label">Status</span>
+              {leadStatuses.map((status) => (
+                <button key={status} className={leadForm.status === status ? `${statusClass(status)} active-btn` : statusClass(status)} onClick={() => setLeadForm({ ...leadForm, status })}>
+                  {status}
+                </button>
+              ))}
+            </div>
+
+            <Field label="Services Needed"><textarea value={leadForm.servicesNeeded} onChange={(e) => setLeadForm({ ...leadForm, servicesNeeded: e.target.value })} /></Field>
+            <Field label="Notes"><textarea value={leadForm.notes} onChange={(e) => setLeadForm({ ...leadForm, notes: e.target.value })} /></Field>
+            <Field label="Raw Scan Text"><textarea value={leadForm.rawScanText} onChange={(e) => setLeadForm({ ...leadForm, rawScanText: e.target.value })} /></Field>
+
+            <div className="action-row">
+              <button className="primary-btn" onClick={saveLead}>Save Lead</button>
+              <button className="secondary-btn" onClick={() => { setLeadForm(emptyLead); setOcrProgress(''); }}>Clear</button>
+              {ocrProgress ? <span className="muted strong">{ocrProgress}</span> : null}
+            </div>
+          </Card>
+
+          <Card title="Lead List" right={<div className="filter-row compact"><input placeholder="Search leads" value={leadSearch} onChange={(e) => setLeadSearch(e.target.value)} /><select value={leadFilterStatus} onChange={(e) => setLeadFilterStatus(e.target.value)}><option>All</option>{leadStatuses.map((s) => <option key={s}>{s}</option>)}</select><select value={leadFilterInterest} onChange={(e) => setLeadFilterInterest(e.target.value)}><option>All</option>{interestLevels.map((s) => <option key={s}>{s}</option>)}</select></div>}>
+            <div className="list-stack">
+              {filteredLeads.length === 0 ? <Empty text="No matching leads." /> : filteredLeads.map((lead) => {
+                const key = `${lead.companyName.toLowerCase()}|${lead.phone}`;
+                const duplicate = leadDuplicates.get(key) > 1;
+                return (
+                  <div key={lead.id} className="list-item wide">
+                    <div>
+                      <div className="title-row">
+                        <strong>{lead.companyName || 'Unnamed lead'}</strong>
+                        {duplicate ? <span className="warn-badge">Possible duplicate</span> : null}
+                      </div>
+                      <p>{lead.contactName} • {lead.phone} • {lead.email}</p>
+                      <p>{lead.address}</p>
+                      <p>{lead.notes}</p>
+                    </div>
+                    <div className="stack-right">
+                      <span className={interestClass(lead.interestLevel)}>{lead.interestLevel}</span>
+                      <span className={statusClass(lead.status)}>{lead.status}</span>
+                      {lead.followUpDate ? <span className={lead.followUpDate <= today() ? 'warn-badge' : 'muted'}>Follow up {lead.followUpDate}</span> : null}
+                      <div className="mini-actions">
+                        <button className="small-btn" onClick={() => updateLead(lead.id, { status: 'Quoted' })}>Quoted</button>
+                        <button className="small-btn" onClick={() => updateLead(lead.id, { status: 'Won' })}>Won</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === 'Loads' && (
+        <div className="grid two-col">
+          <Card title="Load Tracker">
+            <div className="form-grid">
+              <Field label="Date"><input type="date" value={loadForm.date} onChange={(e) => setLoadForm({ ...loadForm, date: e.target.value })} /></Field>
+              <Field label="Customer"><input value={loadForm.customer} onChange={(e) => setLoadForm({ ...loadForm, customer: e.target.value })} /></Field>
+              <Field label="Pickup"><input value={loadForm.pickup} onChange={(e) => setLoadForm({ ...loadForm, pickup: e.target.value })} /></Field>
+              <Field label="Delivery"><input value={loadForm.delivery} onChange={(e) => setLoadForm({ ...loadForm, delivery: e.target.value })} /></Field>
+              <Field label="Miles"><input type="number" value={loadForm.miles} onChange={(e) => setLoadForm({ ...loadForm, miles: e.target.value })} /></Field>
+              <Field label="Rate"><input type="number" value={loadForm.rate} onChange={(e) => setLoadForm({ ...loadForm, rate: e.target.value })} /></Field>
+              <Field label="Expenses"><input type="number" value={loadForm.expenses} onChange={(e) => setLoadForm({ ...loadForm, expenses: e.target.value })} /></Field>
+              <Field label="Tax %"><input type="number" value={loadForm.taxRate} onChange={(e) => setLoadForm({ ...loadForm, taxRate: e.target.value })} /></Field>
+              <Field label="Paid Status">
+                <select value={loadForm.paidStatus} onChange={(e) => setLoadForm({ ...loadForm, paidStatus: e.target.value })}>
+                  {paidStatuses.map((status) => <option key={status}>{status}</option>)}
+                </select>
+              </Field>
+              <Field label="Attach POD / BOL / Image"><input type="file" accept="image/*,.pdf" onChange={(e) => handleLoadAttachment(e.target.files?.[0])} /></Field>
+            </div>
+            <Field label="Notes"><textarea value={loadForm.notes} onChange={(e) => setLoadForm({ ...loadForm, notes: e.target.value })} /></Field>
+
+            <div className="summary-strip">
+              {(() => {
+                const c = calcLoad(loadForm);
+                return (
+                  <>
+                    <SummaryChip label="Profit" value={currency(c.profit)} />
+                    <SummaryChip label="Tax Set Aside" value={currency(c.taxSetAside)} />
+                    <SummaryChip label="Take Home" value={currency(c.takeHome)} />
+                  </>
+                );
+              })()}
+            </div>
+
+            <div className="action-row">
+              <button className="primary-btn" onClick={saveLoad}>Save Load</button>
+              <button className="secondary-btn" onClick={() => setLoadForm({ ...emptyLoad, taxRate: state.settings.defaultTaxRate })}>Clear</button>
+            </div>
+          </Card>
+
+          <Card title="Saved Loads" right={<div className="filter-row compact"><select value={loadFilterPaid} onChange={(e) => setLoadFilterPaid(e.target.value)}><option>All</option>{paidStatuses.map((s) => <option key={s}>{s}</option>)}</select></div>}>
+            <div className="list-stack">
+              {filteredLoads.length === 0 ? <Empty text="No loads yet." /> : filteredLoads.map((load) => {
+                const c = calcLoad(load);
+                return (
+                  <div key={load.id} className="list-item wide">
+                    <div>
+                      <strong>{load.customer || 'Unnamed customer'}</strong>
+                      <p>{load.pickup} → {load.delivery}</p>
+                      <p>{load.date} • {load.miles} miles</p>
+                    </div>
+                    <div className="stack-right align-right">
+                      <strong>{currency(c.profit)}</strong>
+                      <span>{currency(c.taxSetAside)} tax</span>
+                      <span className={statusClass(load.paidStatus)}>{load.paidStatus}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === 'Finance' && (
+        <div className="grid two-col">
+          <Card title="Expense Log">
+            <div className="form-grid">
+              <Field label="Date"><input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} /></Field>
+              <Field label="Category"><select value={expenseForm.category} onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}><option>Fuel</option><option>Maintenance</option><option>Tolls</option><option>Insurance</option><option>Supplies</option><option>Misc</option></select></Field>
+              <Field label="Description"><input value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} /></Field>
+              <Field label="Amount"><input type="number" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} /></Field>
+              <Field label="Payment Method"><select value={expenseForm.paymentMethod} onChange={(e) => setExpenseForm({ ...expenseForm, paymentMethod: e.target.value })}><option>Card</option><option>Cash</option><option>ACH</option><option>Check</option></select></Field>
+            </div>
+            <Field label="Notes"><textarea value={expenseForm.notes} onChange={(e) => setExpenseForm({ ...expenseForm, notes: e.target.value })} /></Field>
+            <div className="action-row">
+              <button className="primary-btn" onClick={saveExpense}>Save Expense</button>
+              <button className="secondary-btn" onClick={() => setExpenseForm(emptyExpense)}>Clear</button>
+            </div>
+          </Card>
+
+          <Card title="Finance Snapshot">
+            <div className="stats-grid small-gap">
+              <Stat title="Revenue Logged" value={currency(dashboard.totalRevenue)} />
+              <Stat title="Expenses Logged" value={currency(dashboard.totalExpenses)} />
+              <Stat title="Profit Logged" value={currency(dashboard.totalProfit)} />
+              <Stat title="Taxes to Save" value={currency(dashboard.totalTax)} alert={dashboard.totalTax > 0} />
+            </div>
+            <div className="list-stack top-gap">
+              {state.expenses.length === 0 ? <Empty text="No expenses yet." /> : state.expenses.map((expense) => (
+                <div key={expense.id} className="list-item compact">
+                  <div>
+                    <strong>{expense.category}</strong>
+                    <p>{expense.description}</p>
+                  </div>
+                  <div className="stack-right align-right">
+                    <strong>{currency(expense.amount)}</strong>
+                    <span>{expense.date}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {tab === 'Documents' && (
+        <Card title="Stored Documents and Images">
+          <div className="list-stack">
+            {state.docs.length === 0 ? <Empty text="No stored documents yet." /> : state.docs.map((doc) => (
+              <div key={doc.id} className="doc-item">
+                <div>
+                  <strong>{doc.name}</strong>
+                  <p>{doc.kind} • {doc.relatedTo}</p>
+                  <p>{doc.date}</p>
+                </div>
+                {doc.dataUrl?.startsWith('data:image') ? <img src={doc.dataUrl} alt={doc.name} className="doc-thumb" /> : <a href={doc.dataUrl} target="_blank" rel="noreferrer" className="small-btn">Open</a>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
+      {tab === 'Quote Tool' && (
+        <div className="grid two-col">
+          <Card title="Quick Quote Calculator">
+            <div className="form-grid">
+              <Field label="Miles"><input type="number" value={quoteForm.miles} onChange={(e) => setQuoteForm({ ...quoteForm, miles: e.target.value })} /></Field>
+              <Field label="Offered Rate"><input type="number" value={quoteForm.offeredRate} onChange={(e) => setQuoteForm({ ...quoteForm, offeredRate: e.target.value })} /></Field>
+              <Field label="Estimated Expenses"><input type="number" value={quoteForm.estimatedExpenses} onChange={(e) => setQuoteForm({ ...quoteForm, estimatedExpenses: e.target.value })} /></Field>
+            </div>
+          </Card>
+          <Card title="Decision Snapshot">
+            <div className="summary-strip vertical">
+              <SummaryChip label="Rate Per Mile" value={`$${quoteStats.rpm.toFixed(2)}`} />
+              <SummaryChip label="Estimated Profit" value={currency(quoteStats.estProfit)} />
+              <SummaryChip label="Decision" value={quoteStats.decision} strong={quoteStats.decision !== 'PASS'} />
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
 
-export default function App() {
-  const [tab, setTab] = useState('outreach');
-  const [outreachForm, setOutreachForm] = useState(initialOutreach);
-  const [invoiceForm, setInvoiceForm] = useState(initialInvoice);
-  const [rateConForm, setRateConForm] = useState(initialRateCon);
-  const [expenseForm, setExpenseForm] = useState(initialExpense);
-  const [loadForm, setLoadForm] = useState(initialLoad);
-
-  const [outreachEntries, setOutreachEntries] = useState([]);
-  const [invoiceEntries, setInvoiceEntries] = useState([]);
-  const [rateConEntries, setRateConEntries] = useState([]);
-  const [expenseEntries, setExpenseEntries] = useState([]);
-  const [loadEntries, setLoadEntries] = useState([]);
-
-  useEffect(() => {
-    setOutreachEntries(loadSaved(storageKeys.outreachEntries, []));
-    setInvoiceEntries(loadSaved(storageKeys.invoiceEntries, []));
-    setRateConEntries(loadSaved(storageKeys.rateConEntries, []));
-    setExpenseEntries(loadSaved(storageKeys.expenseEntries, []));
-    setLoadEntries(loadSaved(storageKeys.loadEntries, []));
-  }, []);
-
-  useEffect(() => saveData(storageKeys.outreachEntries, outreachEntries), [outreachEntries]);
-  useEffect(() => saveData(storageKeys.invoiceEntries, invoiceEntries), [invoiceEntries]);
-  useEffect(() => saveData(storageKeys.rateConEntries, rateConEntries), [rateConEntries]);
-  useEffect(() => saveData(storageKeys.expenseEntries, expenseEntries), [expenseEntries]);
-  useEffect(() => saveData(storageKeys.loadEntries, loadEntries), [loadEntries]);
-
-  const hotLeads = useMemo(
-    () => outreachEntries.filter((entry) => String(entry.interestLevel).toLowerCase() === 'hot').length,
-    [outreachEntries]
-  );
-
-  const followUps = useMemo(
-    () => outreachEntries.filter((entry) => entry.followUpDate).length,
-    [outreachEntries]
-  );
-
-  const totalExpenses = useMemo(
-    () => expenseEntries.reduce((sum, entry) => sum + Number(entry.amount || 0), 0).toFixed(2),
-    [expenseEntries]
-  );
-
-  const totalLoadProfit = useMemo(
-    () => loadEntries.reduce((sum, entry) => sum + (Number(entry.rate || 0) - Number(entry.expenses || 0)), 0).toFixed(2),
-    [loadEntries]
-  );
-
-  const tabs = [
-    ['outreach', 'Outreach'],
-    ['invoice', 'Invoice'],
-    ['ratecon', 'Rate Con'],
-    ['expense', 'Expense'],
-    ['load', 'Load'],
-  ];
-
+function Stat({ title, value, alert = false }) {
   return (
-    <div className="app-shell">
-      <div className="app-wrap">
-        <header className="panel hero-panel">
-          <div>
-            <div className="eyebrow">Mobile Business Tool</div>
-            <h1>Iron Republic Logistics</h1>
-            <p>Track outreach, invoices, rate confirmations, expenses, and load profit from one phone-friendly web app.</p>
-          </div>
-          <div className="stats-grid compact-stats">
-            <div className="stat-card"><span>Total Stops</span><strong>{outreachEntries.length}</strong></div>
-            <div className="stat-card"><span>Hot Leads</span><strong>{hotLeads}</strong></div>
-            <div className="stat-card"><span>Follow-Ups</span><strong>{followUps}</strong></div>
-            <div className="stat-card"><span>Load Profit</span><strong>${totalLoadProfit}</strong></div>
-          </div>
-        </header>
+    <div className={alert ? 'stat alert' : 'stat'}>
+      <span>{title}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
 
-        <nav className="panel tab-bar">
-          {tabs.map(([key, label]) => (
-            <button
-              key={key}
-              className={tab === key ? 'tab active' : 'tab'}
-              onClick={() => setTab(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </nav>
+function SummaryChip({ label, value, strong = false }) {
+  return (
+    <div className={strong ? 'chip strong' : 'chip'}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
 
-        {tab === 'outreach' && (
-          <div className="content-grid">
-            <section className="panel">
-              <h2>Field Outreach Log</h2>
-              <div className="grid three">
-                <Field label="Date" type="date" value={outreachForm.date} onChange={(e) => setOutreachForm({ ...outreachForm, date: e.target.value })} />
-                <Field label="Week" value={outreachForm.week} onChange={(e) => setOutreachForm({ ...outreachForm, week: e.target.value })} />
-                <Field label="Rep" value={outreachForm.rep} onChange={(e) => setOutreachForm({ ...outreachForm, rep: e.target.value })} />
-              </div>
-              <div className="grid two">
-                <Field label="Company Name" value={outreachForm.companyName} onChange={(e) => setOutreachForm({ ...outreachForm, companyName: e.target.value })} />
-                <Field label="Phone #" value={outreachForm.phone} onChange={(e) => setOutreachForm({ ...outreachForm, phone: e.target.value })} />
-                <Field label="Contact Name" value={outreachForm.contactName} onChange={(e) => setOutreachForm({ ...outreachForm, contactName: e.target.value })} />
-                <Field label="Location" value={outreachForm.location} onChange={(e) => setOutreachForm({ ...outreachForm, location: e.target.value })} />
-                <Field label="Business Type" value={outreachForm.businessType} onChange={(e) => setOutreachForm({ ...outreachForm, businessType: e.target.value })} />
-                <Field label="Contact Method" value={outreachForm.contactMethod} onChange={(e) => setOutreachForm({ ...outreachForm, contactMethod: e.target.value })} />
-                <Field label="Interest Level" value={outreachForm.interestLevel} onChange={(e) => setOutreachForm({ ...outreachForm, interestLevel: e.target.value })} />
-                <Field label="Follow-Up Date" type="date" value={outreachForm.followUpDate} onChange={(e) => setOutreachForm({ ...outreachForm, followUpDate: e.target.value })} />
-              </div>
-              <TextField label="Services Needed" value={outreachForm.servicesNeeded} onChange={(e) => setOutreachForm({ ...outreachForm, servicesNeeded: e.target.value })} />
-              <TextField label="Notes" value={outreachForm.notes} onChange={(e) => setOutreachForm({ ...outreachForm, notes: e.target.value })} />
-              <div className="button-row">
-                <button
-                  className="primary"
-                  onClick={() => {
-                    if (!outreachForm.companyName.trim()) return;
-                    setOutreachEntries([{ ...outreachForm }, ...outreachEntries]);
-                    setOutreachForm(initialOutreach);
-                  }}
-                >
-                  Save Entry
-                </button>
-                <button className="secondary" onClick={() => setOutreachForm(initialOutreach)}>Clear</button>
-              </div>
-            </section>
+function Empty({ text }) {
+  return <div className="empty">{text}</div>;
+}
 
-            <section className="panel">
-              <h2>Recent Outreach</h2>
-              <div className="entry-list">
-                {outreachEntries.length === 0 ? (
-                  <div className="empty-state">No outreach entries yet.</div>
-                ) : (
-                  outreachEntries.map((entry, index) => (
-                    <EntryCard
-                      key={index}
-                      title={entry.companyName}
-                      lines={[
-                        `${entry.contactName || 'No contact'} • ${entry.phone || 'No phone'}`,
-                        entry.location || 'No location',
-                        `${entry.interestLevel || 'No interest level'}${entry.followUpDate ? ` • Follow up ${entry.followUpDate}` : ''}`,
-                      ]}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-        )}
-
-        {tab === 'invoice' && (
-          <div className="content-grid single-left">
-            <section className="panel">
-              <h2>Invoice Builder</h2>
-              <div className="grid two">
-                <Field label="Invoice #" value={invoiceForm.invoiceNumber} onChange={(e) => setInvoiceForm({ ...invoiceForm, invoiceNumber: e.target.value })} />
-                <Field label="Date" type="date" value={invoiceForm.date} onChange={(e) => setInvoiceForm({ ...invoiceForm, date: e.target.value })} />
-                <Field label="Due Date" type="date" value={invoiceForm.dueDate} onChange={(e) => setInvoiceForm({ ...invoiceForm, dueDate: e.target.value })} />
-                <Field label="Bill To Company" value={invoiceForm.billToCompany} onChange={(e) => setInvoiceForm({ ...invoiceForm, billToCompany: e.target.value })} />
-                <Field label="Bill To Contact" value={invoiceForm.billToContact} onChange={(e) => setInvoiceForm({ ...invoiceForm, billToContact: e.target.value })} />
-                <Field label="Bill To Phone" value={invoiceForm.billToPhone} onChange={(e) => setInvoiceForm({ ...invoiceForm, billToPhone: e.target.value })} />
-                <Field label="Bill To Email" value={invoiceForm.billToEmail} onChange={(e) => setInvoiceForm({ ...invoiceForm, billToEmail: e.target.value })} />
-                <Field label="Pickup" value={invoiceForm.pickup} onChange={(e) => setInvoiceForm({ ...invoiceForm, pickup: e.target.value })} />
-                <Field label="Delivery" value={invoiceForm.delivery} onChange={(e) => setInvoiceForm({ ...invoiceForm, delivery: e.target.value })} />
-                <Field label="Freight" value={invoiceForm.freight} onChange={(e) => setInvoiceForm({ ...invoiceForm, freight: e.target.value })} />
-                <Field label="Weight" value={invoiceForm.weight} onChange={(e) => setInvoiceForm({ ...invoiceForm, weight: e.target.value })} />
-                <Field label="Rate" value={invoiceForm.rate} onChange={(e) => setInvoiceForm({ ...invoiceForm, rate: e.target.value })} />
-                <Field label="Amount" value={invoiceForm.amount} onChange={(e) => setInvoiceForm({ ...invoiceForm, amount: e.target.value })} />
-                <Field label="Terms" value={invoiceForm.terms} onChange={(e) => setInvoiceForm({ ...invoiceForm, terms: e.target.value })} />
-                <Field label="Payment Methods" value={invoiceForm.paymentMethods} onChange={(e) => setInvoiceForm({ ...invoiceForm, paymentMethods: e.target.value })} />
-              </div>
-              <div className="button-row">
-                <button
-                  className="primary"
-                  onClick={() => {
-                    if (!invoiceForm.invoiceNumber.trim()) return;
-                    setInvoiceEntries([{ ...invoiceForm }, ...invoiceEntries]);
-                    setInvoiceForm(initialInvoice);
-                  }}
-                >
-                  Save Invoice
-                </button>
-                <button className="secondary" onClick={() => setInvoiceForm(initialInvoice)}>Clear</button>
-              </div>
-            </section>
-
-            <section className="panel">
-              <h2>Saved Invoices</h2>
-              <div className="entry-list">
-                {invoiceEntries.length === 0 ? (
-                  <div className="empty-state">No invoices saved yet.</div>
-                ) : (
-                  invoiceEntries.map((entry, index) => (
-                    <EntryCard
-                      key={index}
-                      title={`Invoice ${entry.invoiceNumber}`}
-                      lines={[
-                        entry.billToCompany || 'No customer company',
-                        `${entry.pickup || 'No pickup'} → ${entry.delivery || 'No delivery'}`,
-                        `Amount: ${entry.amount || '$0'} • Terms: ${entry.terms || 'No terms'}`,
-                      ]}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-        )}
-
-        {tab === 'ratecon' && (
-          <div className="content-grid single-left">
-            <section className="panel">
-              <h2>Rate Confirmation</h2>
-              <div className="grid two">
-                <Field label="Company" value={rateConForm.company} onChange={(e) => setRateConForm({ ...rateConForm, company: e.target.value })} />
-                <Field label="Contact Name" value={rateConForm.contactName} onChange={(e) => setRateConForm({ ...rateConForm, contactName: e.target.value })} />
-                <Field label="Phone" value={rateConForm.phone} onChange={(e) => setRateConForm({ ...rateConForm, phone: e.target.value })} />
-                <Field label="Email" value={rateConForm.email} onChange={(e) => setRateConForm({ ...rateConForm, email: e.target.value })} />
-                <Field label="Pickup Location" value={rateConForm.pickupLocation} onChange={(e) => setRateConForm({ ...rateConForm, pickupLocation: e.target.value })} />
-                <Field label="Pickup Date/Time" value={rateConForm.pickupDateTime} onChange={(e) => setRateConForm({ ...rateConForm, pickupDateTime: e.target.value })} />
-                <Field label="Delivery Location" value={rateConForm.deliveryLocation} onChange={(e) => setRateConForm({ ...rateConForm, deliveryLocation: e.target.value })} />
-                <Field label="Delivery Date/Time" value={rateConForm.deliveryDateTime} onChange={(e) => setRateConForm({ ...rateConForm, deliveryDateTime: e.target.value })} />
-                <Field label="Freight" value={rateConForm.freight} onChange={(e) => setRateConForm({ ...rateConForm, freight: e.target.value })} />
-                <Field label="Weight" value={rateConForm.weight} onChange={(e) => setRateConForm({ ...rateConForm, weight: e.target.value })} />
-                <Field label="Pieces" value={rateConForm.pieces} onChange={(e) => setRateConForm({ ...rateConForm, pieces: e.target.value })} />
-                <Field label="Agreed Rate" value={rateConForm.agreedRate} onChange={(e) => setRateConForm({ ...rateConForm, agreedRate: e.target.value })} />
-                <Field label="Payment Terms" value={rateConForm.paymentTerms} onChange={(e) => setRateConForm({ ...rateConForm, paymentTerms: e.target.value })} />
-              </div>
-              <TextField label="Special Instructions" value={rateConForm.specialInstructions} onChange={(e) => setRateConForm({ ...rateConForm, specialInstructions: e.target.value })} />
-              <div className="button-row">
-                <button
-                  className="primary"
-                  onClick={() => {
-                    if (!rateConForm.company.trim()) return;
-                    setRateConEntries([{ ...rateConForm }, ...rateConEntries]);
-                    setRateConForm(initialRateCon);
-                  }}
-                >
-                  Save Rate Con
-                </button>
-                <button className="secondary" onClick={() => setRateConForm(initialRateCon)}>Clear</button>
-              </div>
-            </section>
-
-            <section className="panel">
-              <h2>Saved Rate Cons</h2>
-              <div className="entry-list">
-                {rateConEntries.length === 0 ? (
-                  <div className="empty-state">No rate confirmations saved yet.</div>
-                ) : (
-                  rateConEntries.map((entry, index) => (
-                    <EntryCard
-                      key={index}
-                      title={entry.company}
-                      lines={[
-                        `${entry.pickupLocation || 'No pickup'} → ${entry.deliveryLocation || 'No delivery'}`,
-                        `Freight: ${entry.freight || 'No freight'} • Weight: ${entry.weight || 'N/A'}`,
-                        `Rate: ${entry.agreedRate || '$0'} • Terms: ${entry.paymentTerms || 'No terms'}`,
-                      ]}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-        )}
-
-        {tab === 'expense' && (
-          <div className="content-grid">
-            <section className="panel">
-              <h2>Expense Log</h2>
-              <div className="grid two">
-                <Field label="Date" type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({ ...expenseForm, date: e.target.value })} />
-                <Field label="Category" value={expenseForm.category} onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })} />
-                <Field label="Description" value={expenseForm.description} onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })} />
-                <Field label="Amount" value={expenseForm.amount} onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })} />
-                <Field label="Payment Method" value={expenseForm.paymentMethod} onChange={(e) => setExpenseForm({ ...expenseForm, paymentMethod: e.target.value })} />
-                <Field label="Notes" value={expenseForm.notes} onChange={(e) => setExpenseForm({ ...expenseForm, notes: e.target.value })} />
-              </div>
-              <div className="button-row">
-                <button
-                  className="primary"
-                  onClick={() => {
-                    if (!expenseForm.category.trim()) return;
-                    setExpenseEntries([{ ...expenseForm }, ...expenseEntries]);
-                    setExpenseForm(initialExpense);
-                  }}
-                >
-                  Save Expense
-                </button>
-                <button className="secondary" onClick={() => setExpenseForm(initialExpense)}>Clear</button>
-              </div>
-            </section>
-
-            <section className="panel">
-              <h2>Recent Expenses</h2>
-              <div className="stats-grid two-across">
-                <div className="stat-card"><span>Total Expenses</span><strong>${totalExpenses}</strong></div>
-                <div className="stat-card"><span>Entries</span><strong>{expenseEntries.length}</strong></div>
-              </div>
-              <div className="entry-list">
-                {expenseEntries.length === 0 ? (
-                  <div className="empty-state">No expenses yet.</div>
-                ) : (
-                  expenseEntries.map((entry, index) => (
-                    <EntryCard
-                      key={index}
-                      title={entry.category}
-                      lines={[
-                        entry.description || 'No description',
-                        `${entry.date || 'No date'} • ${entry.paymentMethod || 'No payment method'}`,
-                      ]}
-                      rightText={`$${entry.amount || '0'}`}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
-        )}
-
-        {tab === 'load' && (
-          <div className="content-grid">
-            <section className="panel">
-              <h2>Load Tracker</h2>
-              <div className="grid two">
-                <Field label="Load ID" value={loadForm.loadId} onChange={(e) => setLoadForm({ ...loadForm, loadId: e.target.value })} />
-                <Field label="Date" type="date" value={loadForm.date} onChange={(e) => setLoadForm({ ...loadForm, date: e.target.value })} />
-                <Field label="Pickup" value={loadForm.pickup} onChange={(e) => setLoadForm({ ...loadForm, pickup: e.target.value })} />
-                <Field label="Delivery" value={loadForm.delivery} onChange={(e) => setLoadForm({ ...loadForm, delivery: e.target.value })} />
-                <Field label="Miles" value={loadForm.miles} onChange={(e) => setLoadForm({ ...loadForm, miles: e.target.value })} />
-                <Field label="Rate" value={loadForm.rate} onChange={(e) => setLoadForm({ ...loadForm, rate: e.target.value })} />
-                <Field label="Expenses" value={loadForm.expenses} onChange={(e) => setLoadForm({ ...loadForm, expenses: e.target.value })} />
-                <Field label="Paid (Y/N)" value={loadForm.paid} onChange={(e) => setLoadForm({ ...loadForm, paid: e.target.value })} />
-              </div>
-              <div className="profit-box">
-                <span>Estimated Profit</span>
-                <strong>${(Number(loadForm.rate || 0) - Number(loadForm.expenses || 0)).toFixed(2)}</strong>
-              </div>
-              <div className="button-row">
-                <button
-                  className="primary"
-                  onClick={() => {
-                    if (!loadForm.loadId.trim()) return;
-                    setLoadEntries([{ ...loadForm }, ...loadEntries]);
-                    setLoadForm(initialLoad);
-                  }}
-                >
-                  Save Load
-                </button>
-                <button className="secondary" onClick={() => setLoadForm(initialLoad)}>Clear</button>
-              </div>
-            </section>
-
-            <section className="panel">
-              <h2>Recent Loads</h2>
-              <div className="entry-list">
-                {loadEntries.length === 0 ? (
-                  <div className="empty-state">No loads yet.</div>
-                ) : (
-                  loadEntries.map((entry, index) => (
-                    <EntryCard
-                      key={index}
-                      title={entry.loadId}
-                      lines={[
-                        `${entry.pickup || 'No pickup'} → ${entry.delivery || 'No delivery'}`,
-                        `Miles: ${entry.miles || '0'} • Paid: ${entry.paid || 'N'}`,
-                        `Profit: $${(Number(entry.rate || 0) - Number(entry.expenses || 0)).toFixed(2)}`,
-                      ]}
-                    />
-                  ))
-                )}
-              </div>
-            </section>
-          </div>
         )}
       </div>
     </div>
