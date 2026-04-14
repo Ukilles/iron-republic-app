@@ -252,4 +252,3 @@ textarea {
   .grid.two-col, .topbar, .stats-grid, .stats-grid.small-gap, .form-grid { grid-template-columns: 1fr; display: grid; }
   .topbar { display: grid; }
 }
-
