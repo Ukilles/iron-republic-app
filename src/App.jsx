@@ -1,5 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import Tesseract from 'tesseract.js';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, onSnapshot, setDoc, doc, deleteDoc } from 'firebase/firestore';
+
+const firebaseConfig = {
+  apiKey: 'AIzaSyA2Ngwvkins7TD11D8oxovFjvAAsr67LKE',
+  authDomain: 'iron-republic-logistics.firebaseapp.com',
+  projectId: 'iron-republic-logistics',
+  storageBucket: 'iron-republic-logistics.firebasestorage.app',
+  messagingSenderId: '467428837516',
+  appId: '1:467428837516:web:2a0ee3d5e5d5f0972193a9',
+  measurementId: 'G-2VS53JLV05',
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
 
 const STORAGE_KEY = 'irl-upgraded-app-v1';
 
@@ -220,10 +235,30 @@ export default function App() {
   const [loadFilterPaid, setLoadFilterPaid] = useState('All');
   const [ocrBusy, setOcrBusy] = useState(false);
   const [ocrProgress, setOcrProgress] = useState('');
+  const [editingLeadId, setEditingLeadId] = useState('');
+  const [cloudStatus, setCloudStatus] = useState('Connecting to cloud...');
 
   useEffect(() => {
     saveState(state);
   }, [state]);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'leads'),
+      (snapshot) => {
+        const cloudLeads = snapshot.docs
+          .map((record) => ({ id: record.id, ...record.data() }))
+          .sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+        setState((prev) => ({ ...prev, leads: cloudLeads }));
+        setCloudStatus('Cloud sync live');
+      },
+      () => {
+        setCloudStatus('Cloud sync failed');
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
 
   const dashboard = useMemo(() => {
     const hotLeads = state.leads.filter((lead) => lead.interestLevel === 'Hot').length;
@@ -295,19 +330,85 @@ export default function App() {
     }
   }
 
-  function saveLead() {
+  async function saveLead() {
+    if (!leadForm.companyName.trim()) {
+      setOcrProgress('Company name is required.');
+      return;
+    }
+
     const duplicateKey = `${leadForm.companyName.toLowerCase()}|${leadForm.phone}`;
-    const isDuplicate = leadDuplicates.get(duplicateKey) > 0;
-    const lead = { ...leadForm, id: makeId('lead') };
-    setState((prev) => ({
-      ...prev,
-      leads: [lead, ...prev.leads],
-      docs: lead.attachmentDataUrl
-        ? [{ id: makeId('doc'), kind: 'Lead Attachment', name: lead.attachmentName || 'Lead image', date: lead.date, relatedTo: lead.companyName, dataUrl: lead.attachmentDataUrl }, ...prev.docs]
-        : prev.docs,
-    }));
-    setLeadForm(emptyLead);
-    setOcrProgress(isDuplicate ? 'Saved, but this looks like a duplicate lead.' : 'Lead saved.');
+    const isDuplicate = leadDuplicates.get(duplicateKey) > (editingLeadId ? 1 : 0);
+    const leadId = editingLeadId || leadForm.id || makeId('lead');
+    const lead = { ...leadForm, id: leadId };
+
+    try {
+      await setDoc(doc(db, 'leads', leadId), lead);
+      setState((prev) => ({
+        ...prev,
+        docs: lead.attachmentDataUrl
+          ? [
+              {
+                id: `lead-doc-${leadId}`,
+                kind: 'Lead Attachment',
+                name: lead.attachmentName || 'Lead image',
+                date: lead.date,
+                relatedTo: lead.companyName,
+                relatedLeadId: leadId,
+                dataUrl: lead.attachmentDataUrl,
+              },
+              ...prev.docs.filter((item) => item.id !== `lead-doc-${leadId}`),
+            ]
+          : prev.docs.filter((item) => item.id !== `lead-doc-${leadId}`),
+      }));
+      setLeadForm(emptyLead);
+      setEditingLeadId('');
+      setOcrProgress(
+        editingLeadId
+          ? 'Lead updated in the cloud.'
+          : isDuplicate
+            ? 'Saved, but this looks like a duplicate lead.'
+            : 'Lead saved to the cloud.'
+      );
+    } catch (error) {
+      setOcrProgress('Lead save failed. Check your connection and try again.');
+    }
+  }
+
+  function startEditLead(lead) {
+    setLeadForm({ ...emptyLead, ...lead });
+    setEditingLeadId(lead.id);
+    setTab('Leads');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function updateLead(id, patch) {
+    const currentLead = state.leads.find((lead) => lead.id === id);
+    if (!currentLead) return;
+
+    try {
+      await setDoc(doc(db, 'leads', id), { ...currentLead, ...patch }, { merge: false });
+    } catch (error) {
+      console.error('Lead update failed:', error);
+    }
+  }
+
+  async function deleteLead(id) {
+    const confirmed = window.confirm('Delete this lead? This cannot be undone.');
+    if (!confirmed) return;
+
+    try {
+      await deleteDoc(doc(db, 'leads', id));
+      setState((prev) => ({
+        ...prev,
+        docs: prev.docs.filter((item) => item.relatedLeadId !== id),
+      }));
+      if (editingLeadId === id) {
+        setLeadForm(emptyLead);
+        setEditingLeadId('');
+      }
+    } catch (error) {
+      console.error('Lead delete failed:', error);
+    }
   }
 
   function saveLoad() {
@@ -330,13 +431,6 @@ export default function App() {
     const expense = { ...expenseForm, id: makeId('expense') };
     setState((prev) => ({ ...prev, expenses: [expense, ...prev.expenses] }));
     setExpenseForm(emptyExpense);
-  }
-
-  function updateLead(id, patch) {
-    setState((prev) => ({
-      ...prev,
-      leads: prev.leads.map((lead) => (lead.id === id ? { ...lead, ...patch } : lead)),
-    }));
   }
 
   function calcLoad(load) {
@@ -406,6 +500,7 @@ export default function App() {
         <div>
           <h1>Iron Republic Logistics</h1>
           <p>Lead tracking, loads, taxes, follow-ups, scanner, and paperwork in one field system.</p>
+          <p className="muted">{cloudStatus}</p>
         </div>
         <div className="settings-box">
           <Field label="Default Tax %">
@@ -506,7 +601,7 @@ export default function App() {
 
       {tab === 'Leads' && (
         <div className="grid two-col">
-          <Card title="Lead Capture" right={ocrBusy ? <span className="muted">{ocrProgress}</span> : <span className="muted">Scan → review → save</span>}>
+          <Card title="Lead Capture" right={ocrBusy ? <span className="muted">{ocrProgress}</span> : <span className="muted">{editingLeadId ? 'Editing lead' : 'Scan → review → save'}</span>}>
             <div className="form-grid">
               <Field label="Scan Business Card">
                 <input type="file" accept="image/*" capture="environment" onChange={(e) => scanBusinessCard(e.target.files?.[0])} />
@@ -560,8 +655,8 @@ export default function App() {
             <Field label="Raw Scan Text"><textarea value={leadForm.rawScanText} onChange={(e) => setLeadForm({ ...leadForm, rawScanText: e.target.value })} /></Field>
 
             <div className="action-row">
-              <button className="primary-btn" onClick={saveLead}>Save Lead</button>
-              <button className="secondary-btn" onClick={() => { setLeadForm(emptyLead); setOcrProgress(''); }}>Clear</button>
+              <button className="primary-btn" onClick={saveLead}>{editingLeadId ? 'Update Lead' : 'Save Lead'}</button>
+              <button className="secondary-btn" onClick={() => { setLeadForm(emptyLead); setEditingLeadId(''); setOcrProgress(''); }}>Clear</button>
               {ocrProgress ? <span className="muted strong">{ocrProgress}</span> : null}
             </div>
           </Card>
@@ -587,8 +682,12 @@ export default function App() {
                       <span className={statusClass(lead.status)}>{lead.status}</span>
                       {lead.followUpDate ? <span className={lead.followUpDate <= today() ? 'warn-badge' : 'muted'}>Follow up {lead.followUpDate}</span> : null}
                       <div className="mini-actions">
+                        <a className="small-btn" href={`tel:${lead.phone || ''}`}>Call</a>
+                        {lead.address ? <a className="small-btn" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lead.address)}`} target="_blank" rel="noreferrer">Map</a> : null}
+                        <button className="small-btn" onClick={() => startEditLead(lead)}>Edit</button>
                         <button className="small-btn" onClick={() => updateLead(lead.id, { status: 'Quoted' })}>Quoted</button>
                         <button className="small-btn" onClick={() => updateLead(lead.id, { status: 'Won' })}>Won</button>
+                        <button className="small-btn danger" onClick={() => deleteLead(lead.id)}>Delete</button>
                       </div>
                     </div>
                   </div>
@@ -791,6 +890,12 @@ function SummaryChip({ label, value, strong = false }) {
       <strong>{value}</strong>
     </div>
   );
+}
+
+function Empty({ text }) {
+  return <div className="empty">{text}</div>;
+}
+
 }
 
 function Empty({ text }) {
